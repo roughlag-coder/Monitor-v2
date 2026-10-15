@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft Server Monitor</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#1b1f24;--muted:#6b7280;--ok:#16a34a;--bad:#dc2626;--line:#e5e7eb;--accent:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#181e26;--text:#e8ecf1;--muted:#8b95a3;--line:#262e38;--accent:#60a5fa}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text);padding:16px}
+main{max-width:640px;margin:0 auto}
+h1{font-size:1.3rem;margin:8px 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+input{flex:1;min-width:140px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+input.port{flex:0 0 90px;min-width:90px}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;cursor:pointer}
+.status{display:flex;align-items:center;gap:10px;font-size:1.4rem;font-weight:600}
+.dot{width:14px;height:14px;border-radius:50%;background:var(--muted)}
+.up .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.down .dot{background:var(--bad)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.k{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.v{font-weight:600;word-break:break-word}
+canvas{width:100%;height:80px;display:block}
+ul{list-style:none;margin:0;padding:0;max-height:200px;overflow:auto;font-size:.9rem}
+li{padding:4px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.muted{color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+<h1>⛏️ Minecraft Server Monitor <span class="muted">(Bedrock)</span></h1>
+
+<div class="card">
+  <div class="row">
+    <input id="host" placeholder="play.example.com or IP" autocapitalize="off" autocorrect="off">
+    <input id="port" class="port" placeholder="19132" inputmode="numeric">
+    <button id="go">Monitor</button>
+  </div>
+  <p class="muted" style="margin:8px 0 0">Refreshes every 60s. Your server must be reachable from the internet.</p>
+</div>
+
+<div class="card" id="statusCard">
+  <div class="status" id="status"><span class="dot"></span><span id="statusText">Not checked</span></div>
+  <div class="grid">
+    <div><div class="k">Players</div><div class="v" id="players">–</div></div>
+    <div><div class="k">Version</div><div class="v" id="version">–</div></div>
+    <div><div class="k">MOTD</div><div class="v" id="motd">–</div></div>
+    <div><div class="k">Uptime (this session)</div><div class="v" id="uptime">–</div></div>
+  </div>
+</div>
+
+<div class="card"><div class="k">Debug</div><div class="muted" id="detail" style="word-break:break-all">–</div></div>
+
+<div class="card">
+  <div class="k">Player count history</div>
+  <canvas id="chart" width="600" height="80"></canvas>
+</div>
+
+<div class="card" id="listCard" style="display:none">
+  <div class="k">Online now</div>
+  <ul id="plist"></ul>
+</div>
+
+<div class="card">
+  <div class="k">Event log</div>
+  <ul id="log"><li class="muted">No events yet</li></ul>
+</div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let timer = null, history = [], checks = 0, upChecks = 0, lastUp = null;
+
+function load(k){ try { return localStorage.getItem(k) || ''; } catch(e){ return ''; } }
+function save(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+
+$('host').value = load('mc_host');
+$('port').value = load('mc_port');
+
+function log(msg){
+  const ul = $('log');
+  if (ul.firstChild && ul.firstChild.classList && ul.firstChild.classList.contains('muted')) ul.innerHTML = '';
+  const li = document.createElement('li');
+  li.innerHTML = '<span></span><span class="muted"></span>';
+  li.children[0].textContent = msg;
+  li.children[1].textContent = new Date().toLocaleTimeString();
+  ul.prepend(li);
+}
+
+async function check(){
+  const host = $('host').value.trim();
+  const port = $('port').value.trim() || '19132';
+  if (!host) return;
+  const target = host + ':' + port;
+  checks++;
+  let up = false, data = null, apiFail = false, err = '';
+  try {
+    const r = await fetch('https://api.mcsrvstat.us/bedrock/3/' + encodeURIComponent(target));
+    data = await r.json();
+    up = !!data.online;
+  } catch(e){ up = false; apiFail = true; err = String(e && e.message || e); }
+
+  if (up) upChecks++;
+  if (lastUp !== null && lastUp !== up) log(up ? 'Server came online' : 'Server went offline');
+  else if (lastUp === null) log(up ? 'Server is online' : 'Server is offline / unreachable');
+  lastUp = up;
+
+  $('statusCard').className = 'card ' + (up ? 'up' : 'down');
+  $('statusText').textContent = up ? 'Online' : (apiFail ? "Couldn't reach status API" : 'Offline');
+  const d = data || {};
+  if (apiFail) { $('detail').textContent = 'Error: ' + err + ' (page origin: ' + location.protocol + '//' + (location.host||'file') + ')'; return finish(); }
+  $('detail').textContent = 'Queried ' + target + (d.ip ? ' → resolved ' + d.ip + ':' + d.port : '') + (d.debug ? ' | ping=' + d.debug.ping + ' query=' + d.debug.query + ' bedrock=' + d.debug.bedrock : '') + (d.hostname ? ' | host ' + d.hostname : '');
+  $('uptime').textContent = Math.round(upChecks / checks * 100) + '% (' + checks + ' checks)';
+
+  if (up) {
+    const p = data.players || {};
+    $('players').textContent = (p.online ?? 0) + ' / ' + (p.max ?? '?');
+    $('version').textContent = (data.version || '–');
+    $('motd').textContent = (data.motd && data.motd.clean ? data.motd.clean.join(' ') : '–') || '–';
+    const list = (p.list || []).map(x => x.name);
+    $('listCard').style.display = list.length ? '' : 'none';
+    $('plist').innerHTML = '';
+    list.forEach(n => { const li = document.createElement('li'); li.textContent = n; $('plist').appendChild(li); });
+    history.push(p.online ?? 0);
+  } else {
+    $('players').textContent = '–';
+    $('listCard').style.display = 'none';
+    history.push(0);
+  }
+  finish();
+}
+function finish(){
+  if (history.length > 60) history.shift();
+  draw();
+}
+
+function draw(){
+  const c = $('chart'), g = c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  if (history.length < 2) return;
+  const max = Math.max(1, ...history);
+  g.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#2563eb';
+  g.lineWidth = 2; g.beginPath();
+  history.forEach((v,i) => {
+    const x = i / (history.length - 1) * (c.width - 4) + 2;
+    const y = c.height - 6 - (v / max) * (c.height - 12);
+    i ? g.lineTo(x,y) : g.moveTo(x,y);
+  });
+  g.stroke();
+}
+
+$('go').onclick = () => {
+  save('mc_host', $('host').value.trim());
+  save('mc_port', $('port').value.trim());
+  history = []; checks = 0; upChecks = 0; lastUp = null;
+  clearInterval(timer);
+  check();
+  timer = setInterval(check, 60000);
+};
+
+if ($('host').value) $('go').click();
+</script>
+</body>
+</html>
